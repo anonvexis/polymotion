@@ -14,7 +14,7 @@
         body {
             margin: 0;
             padding: 0;
-            background-color: #050505;
+            background-color: #000;
             color: #eee;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             overflow: hidden;
@@ -73,7 +73,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(5,5,5,0.95);
+            background: rgba(0,0,0,1);
             z-index: 100;
             display: flex;
             flex-direction: column;
@@ -130,10 +130,10 @@
 
     <!-- Startup Overlay -->
     <div id="start-overlay">
-        <h2>GEOMETRY INTERFACE</h2>
+        <h2>INVISIBLE GEOMETRY</h2>
         <p style="max-width: 500px; color: #888; line-height: 1.5;">
             Uses AI to map your skeleton to a physics simulation.<br>
-            Your body becomes the geometry that interacts with the digital world.
+            You are invisible, but your presence moves the particles.
         </p>
         <button id="start-btn">Initialize System</button>
         <div class="loader" id="loader"></div>
@@ -160,10 +160,10 @@
     <script>
         // --- Configuration ---
         const CONFIG = {
-            particleCount: 150,
+            particleCount: 500, // Increased for denser field
             particleSize: { min: 2, max: 8 },
-            skeletonThickness: 15, // Physics thickness of your arms/video
-            smoothFactor: 0.5 // Smoothing for jittery AI detection
+            skeletonThickness: 20, // Slightly thicker for better invisible collision
+            smoothFactor: 0.5 
         };
 
         // --- Globals ---
@@ -173,9 +173,6 @@
         let pose; // MediaPipe Pose instance
         
         // Physics Bodies for Skeleton
-        // We track key landmarks: 
-        // 11=Left Shoulder, 12=Right Shoulder, 13=Left Elbow, 14=Right Elbow, 
-        // 15=Left Wrist, 16=Right Wrist, 0=Nose
         let skeletonBodies = {
             head: null,
             l_shoulder: null, r_shoulder: null,
@@ -183,17 +180,6 @@
             l_wrist: null, r_wrist: null
         };
         
-        // Visual Connections (pairs of landmarks to draw lines between)
-        const connections = [
-            ['l_shoulder', 'r_shoulder'],
-            ['l_shoulder', 'l_elbow'],
-            ['l_elbow', 'l_wrist'],
-            ['r_shoulder', 'r_elbow'],
-            ['r_elbow', 'r_wrist'],
-            ['l_shoulder', 'head'],
-            ['r_shoulder', 'head']
-        ];
-
         // Matter.js Aliases
         const Engine = Matter.Engine,
               Bodies = Matter.Bodies,
@@ -286,15 +272,16 @@
             Composite.add(engine.world, walls);
 
             // Create Skeleton Bodies (Static kinetic bodies that we move manually)
-            // We make them circles for smooth collisions
             const opts = { 
-                isStatic: true, // We control position manually
-                render: { fillStyle: '#00ffcc' } 
+                isStatic: true, 
+                // Render properties don't matter much as we custom draw, 
+                // but we keep them for debugging if needed
+                render: { visible: false } 
             };
             
             for (let key in skeletonBodies) {
                 // Determine size based on body part
-                let r = (key === 'head') ? 30 : CONFIG.skeletonThickness;
+                let r = (key === 'head') ? 35 : CONFIG.skeletonThickness;
                 skeletonBodies[key] = Bodies.circle(-100, -100, r, opts); // Start off screen
                 Composite.add(engine.world, skeletonBodies[key]);
             }
@@ -359,24 +346,20 @@
 
         function updateSkeletonPhysics(landmarks) {
             // Helper to map 0-1 coords to screen width/height
-            // Note: MediaPipe mirrors coordinates horizontally usually, but we want a mirror effect
-            // x is 0(left) to 1(right). In webcam mirror:
-            // If I move left hand (screen left), that's x close to 0.
-            // But usually raw video is not mirrored. 
-            // We will render video flipped, so we must flip X coordinate for physics to match visual.
+            // Note: MediaPipe mirrors coordinates horizontally usually, but we want a mirror effect.
+            // We flip the X to match the visual logic, even though we aren't drawing the video.
+            // This ensures if you move your right hand, the right side of the screen reacts.
             
             const getPos = (idx) => ({
-                x: (1 - landmarks[idx].x) * width, // Flip X for mirror
+                x: (1 - landmarks[idx].x) * width, 
                 y: landmarks[idx].y * height
             });
 
             const updateBody = (key, idx) => {
                 if (landmarks[idx] && landmarks[idx].visibility > 0.5) {
                     const target = getPos(idx);
-                    // Direct position setting is simplest for "Kinetic" static bodies
                     Body.setPosition(skeletonBodies[key], target);
                 } else {
-                    // Move off screen if lost
                     Body.setPosition(skeletonBodies[key], {x: -1000, y: -1000});
                 }
             };
@@ -394,7 +377,7 @@
             // FPS Calc
             const dt = timestamp - lastFrameTime;
             lastFrameTime = timestamp;
-            if (timestamp % 20 < 1) { // Update FPS infrequently
+            if (timestamp % 20 < 1) { 
                 document.getElementById('fps-counter').innerText = `FPS: ${Math.round(1000/dt)}`;
             }
 
@@ -415,68 +398,13 @@
 
         function draw() {
             // 1. Clear & Background
-            ctx.fillStyle = '#050505';
+            ctx.fillStyle = '#000000';
             ctx.fillRect(0, 0, width, height);
 
-            // 2. Draw Camera Feed (Dimmed & Mirrored)
-            ctx.save();
-            ctx.scale(-1, 1); // Mirror
-            ctx.translate(-width, 0);
-            ctx.globalAlpha = 0.2; // Darken video
-            
-            // Draw video "cover" style
-            const vRatio = video.videoWidth / video.videoHeight;
-            const cRatio = width / height;
-            if (cRatio > vRatio) {
-                const h = width / vRatio;
-                ctx.drawImage(video, 0, (height-h)/2, width, h);
-            } else {
-                const w = height * vRatio;
-                ctx.drawImage(video, (width-w)/2, 0, w, height);
-            }
-            ctx.restore();
-
-            // 3. Draw Geometry Overlay (Skeleton Lines)
-            if (detectedLandmarks) {
-                ctx.strokeStyle = '#00ffcc';
-                ctx.lineWidth = 2;
-                ctx.shadowBlur = 10;
-                ctx.shadowColor = '#00ffcc';
-                ctx.lineCap = 'round';
-                
-                ctx.beginPath();
-                
-                // Helper to get body pos from our physics objects (which are already smoothed/positioned)
-                const pos = (key) => skeletonBodies[key].position;
-                const vis = (key) => skeletonBodies[key].position.x > -500; // Check if on screen
-
-                connections.forEach(([p1, p2]) => {
-                    if (vis(p1) && vis(p2)) {
-                        ctx.moveTo(pos(p1).x, pos(p1).y);
-                        ctx.lineTo(pos(p2).x, pos(p2).y);
-                    }
-                });
-                
-                ctx.stroke();
-
-                // Draw Nodes
-                ctx.fillStyle = '#fff';
-                for (let key in skeletonBodies) {
-                    if (vis(key)) {
-                        const p = pos(key);
-                        ctx.beginPath();
-                        ctx.arc(p.x, p.y, 5, 0, Math.PI*2);
-                        ctx.fill();
-                    }
-                }
-                
-                // Reset Shadow
-                ctx.shadowBlur = 0;
-            }
+            // 2. Draw Camera Feed -> REMOVED for Invisible Mode
+            // 3. Draw Geometry Overlay -> REMOVED for Invisible Mode
 
             // 4. Draw Particles
-            ctx.fillStyle = 'rgba(255,255,255,0.8)';
-            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
             ctx.lineWidth = 1;
 
             particles.forEach(p => {
@@ -487,9 +415,19 @@
                 ctx.lineTo(v[0].x, v[0].y);
                 
                 // Color based on speed
+                // Neon colors on black background
                 const speed = p.speed;
-                if (speed > 2) ctx.fillStyle = '#00ffcc';
-                else ctx.fillStyle = '#444';
+                const speedRatio = Math.min(speed / 5, 1); // 0 to 1
+                
+                if (speed > 0.5) {
+                    // Fast particles get color
+                    ctx.fillStyle = `rgba(0, 255, 204, ${0.5 + speedRatio * 0.5})`;
+                    ctx.strokeStyle = `rgba(0, 255, 204, ${0.2 + speedRatio})`;
+                } else {
+                    // Slow particles are white/grey
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                }
 
                 ctx.fill();
                 ctx.stroke();
@@ -503,7 +441,6 @@
             height = window.innerHeight;
             canvas.width = width;
             canvas.height = height;
-            // Wall updates omitted for brevity, but particles wrap anyway
         });
     </script>
 </body>
