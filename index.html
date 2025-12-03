@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webcam Physics Mirror</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #444;
+            backdrop-filter: blur(5px);
+            z-index: 10;
+            max-width: 300px;
+        }
+
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+            color: #00ffcc;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
+
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: #00ffcc;
+        }
+
+        button {
+            background: #00ffcc;
+            color: #000;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 5px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #00ccaa;
+        }
+
+        button.secondary {
+            background: transparent;
+            border: 1px solid #555;
+            color: #ccc;
+            margin-top: 8px;
+        }
+
+        button.secondary:hover {
+            border-color: #888;
+            color: #fff;
+        }
+
+        .status {
+            font-size: 0.8rem;
+            margin-top: 10px;
+            color: #ffcc00;
+            min-height: 1.2em;
+        }
+
+        #start-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        #start-overlay h2 {
+            font-size: 2rem;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+
+        #start-btn {
+            font-size: 1.5rem;
+            padding: 15px 40px;
+            width: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Startup Overlay -->
+    <div id="start-overlay">
+        <h2>Physics Webcam Mirror</h2>
+        <p style="max-width: 500px; color: #ccc; margin-bottom: 30px;">
+            This simulation requires camera access. Your movement will control the physics bodies. <br>
+            Move your hands to bounce the falling shapes!
+        </p>
+        <button id="start-btn">Start Camera</button>
+    </div>
+
+    <!-- UI Controls -->
+    <div id="ui-layer" style="display:none;">
+        <h1>Controls</h1>
+        
+        <div class="control-group">
+            <label>Detection Threshold <span id="thresh-val">100</span></label>
+            <input type="range" id="threshold" min="0" max="255" value="100">
+            <small style="color:#666; font-size: 0.7em;">Lower = Detects more shadow</small>
+        </div>
+
+        <div class="control-group">
+            <label>Grid Resolution <span id="res-val">20</span>px</label>
+            <input type="range" id="resolution" min="15" max="50" value="25" step="5">
+            <small style="color:#666; font-size: 0.7em;">Changes require reset</small>
+        </div>
+
+        <div class="control-group">
+            <label>Invert Detection</label>
+            <button class="secondary" id="invert-btn">Mode: Dark Objects (Shadows)</button>
+        </div>
+
+        <button id="clear-btn">Clear Objects</button>
+        <button class="secondary" id="reset-sim-btn">Reset Simulation</button>
+        <div class="status" id="status-msg">Waiting for camera...</div>
+    </div>
+
+    <div id="canvas-container">
+        <!-- Main Visual Canvas -->
+        <canvas id="world"></canvas>
+    </div>
+
+    <!-- Hidden Video Element -->
+    <video id="webcam" autoplay playsinline style="display:none;"></video>
+    
+    <!-- Hidden Canvas for Pixel Processing -->
+    <canvas id="process-canvas" style="display:none;"></canvas>
+
+    <script>
+        // --- Configuration ---
+        const CONFIG = {
+            particleCount: 100,
+            particleSize: { min: 5, max: 20 },
+            spawnRate: 5, // frames between spawns
+            gridSize: 25, // Size of interaction blocks in px
+            threshold: 100, // 0-255 brightness threshold
+            invert: false // If true, bright areas are solid. If false, dark areas are solid.
+        };
+
+        // --- Globals ---
+        let engine, render, runner, composite;
+        let video = document.getElementById('webcam');
+        let canvas = document.getElementById('world');
+        let ctx = canvas.getContext('2d');
+        let processCanvas = document.getElementById('process-canvas');
+        let processCtx = processCanvas.getContext('2d', { willReadFrequently: true });
+        
+        // Physics Grids
+        let gridBodies = [];
+        let particles = [];
+        let width, height;
+        let isRunning = false;
+        let frameCount = 0;
+
+        // --- Matter.js Aliases ---
+        const Engine = Matter.Engine,
+              Render = Matter.Render,
+              Runner = Matter.Runner,
+              Bodies = Matter.Bodies,
+              Composite = Matter.Composite,
+              Events = Matter.Events,
+              Common = Matter.Common,
+              Vector = Matter.Vector;
+
+        // --- Initialization ---
+        
+        document.getElementById('start-btn').addEventListener('click', async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 }, 
+                        height: { ideal: 480 },
+                        facingMode: "user" 
+                    }, 
+                    audio: false 
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    document.getElementById('start-overlay').style.display = 'none';
+                    document.getElementById('ui-layer').style.display = 'block';
+                    initPhysics();
+                    startLoop();
+                };
+            } catch (err) {
+                alert("Camera access denied or failed. Please allow camera access to play.");
+                console.error(err);
+            }
+        });
+
+        function initPhysics() {
+            // Setup Canvas Sizing
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+
+            // Setup Engine
+            engine = Engine.create();
+            engine.gravity.y = 1;
+
+            // Setup Boundaries (Left, Right, Bottom) - Top is open
+            const wallOptions = { isStatic: true, render: { fillStyle: '#333' } };
+            const ground = Bodies.rectangle(width / 2, height + 50, width, 100, wallOptions);
+            const leftWall = Bodies.rectangle(-50, height / 2, 100, height, wallOptions);
+            const rightWall = Bodies.rectangle(width + 50, height / 2, 100, height, wallOptions);
+            
+            Composite.add(engine.world, [ground, leftWall, rightWall]);
+
+            // Create the Interaction Grid
+            createGrid();
+
+            // Hook into Matter.js update loop
+            Events.on(engine, 'afterUpdate', spawnParticles);
+        }
+
+        function createGrid() {
+            // Remove old grid if exists
+            if (gridBodies.length > 0) {
+                Composite.remove(engine.world, gridBodies);
+                gridBodies = [];
+            }
+
+            const rows = Math.ceil(height / CONFIG.gridSize);
+            const cols = Math.ceil(width / CONFIG.gridSize);
+
+            // Set process canvas size to match grid resolution (small = fast)
+            processCanvas.width = cols;
+            processCanvas.height = rows;
+
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    const bx = x * CONFIG.gridSize + (CONFIG.gridSize / 2);
+                    const by = y * CONFIG.gridSize + (CONFIG.gridSize / 2);
+                    
+                    const body = Bodies.rectangle(bx, by, CONFIG.gridSize, CONFIG.gridSize, {
+                        isStatic: true,
+                        isSensor: true, // Start as pass-through
+                        render: { 
+                            fillStyle: 'rgba(0, 255, 204, 0.5)',
+                            visible: false
+                        },
+                        label: 'grid'
+                    });
+                    
+                    gridBodies.push(body);
+                }
+            }
+            Composite.add(engine.world, gridBodies);
+            updateStatus(`Grid Created: ${cols}x${rows} (${gridBodies.length} bodies)`);
+        }
+
+        function spawnParticles() {
+            frameCount++;
+            if (frameCount % CONFIG.spawnRate === 0 && particles.length < CONFIG.particleCount) {
+                const size = Common.random(CONFIG.particleSize.min, CONFIG.particleSize.max);
+                const x = Common.random(50, width - 50);
+                
+                // Random neon colors
+                const colors = ['#ff0055', '#00ffcc', '#ffff00', '#cc00ff'];
+                const color = Common.choose(colors);
+
+                let body;
+                if (Math.random() > 0.5) {
+                    body = Bodies.circle(x, -50, size, {
+                        restitution: 0.9,
+                        friction: 0.001,
+                        render: { fillStyle: color }
+                    });
+                } else {
+                    body = Bodies.rectangle(x, -50, size*1.5, size*1.5, {
+                        restitution: 0.7,
+                        render: { fillStyle: color }
+                    });
+                }
+
+                particles.push(body);
+                Composite.add(engine.world, body);
+            }
+
+            // Cleanup falling particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                if (particles[i].position.y > height + 100) {
+                    Composite.remove(engine.world, particles[i]);
+                    particles.splice(i, 1);
+                }
+            }
+        }
+
+        // --- Main Loop ---
+        function startLoop() {
+            if (isRunning) return;
+            isRunning = true;
+            
+            (function renderLoop() {
+                // 1. Update Physics
+                Engine.update(engine, 1000 / 60);
+
+                // 2. Process Webcam
+                updateGridFromWebcam();
+
+                // 3. Render Visuals
+                draw();
+
+                requestAnimationFrame(renderLoop);
+            })();
+        }
+
+        function updateGridFromWebcam() {
+            if (video.readyState !== 4) return;
+
+            const w = processCanvas.width;
+            const h = processCanvas.height;
+
+            // Draw video to tiny canvas (Mirror effect: scale -1, 1)
+            processCtx.save();
+            processCtx.translate(w, 0);
+            processCtx.scale(-1, 1);
+            processCtx.drawImage(video, 0, 0, w, h);
+            processCtx.restore();
+
+            // Get Pixel Data
+            const frame = processCtx.getImageData(0, 0, w, h);
+            const data = frame.data;
+
+            // Update Physics Bodies based on pixel brightness
+            for (let i = 0; i < gridBodies.length; i++) {
+                const body = gridBodies[i];
+                
+                // data array is r,g,b,a, r,g,b,a...
+                const index = i * 4; 
+                const r = data[index];
+                const g = data[index + 1];
+                const b = data[index + 2];
+                
+                // Simple brightness calculation
+                const brightness = (r + g + b) / 3;
+                
+                // Determination logic
+                let isSolid = false;
+                if (CONFIG.invert) {
+                    // Bright things are solid (Flashlight mode)
+                    isSolid = brightness > CONFIG.threshold;
+                } else {
+                    // Dark things are solid (Shadow/Silhouette mode)
+                    isSolid = brightness < CONFIG.threshold;
+                }
+
+                // Update Body State
+                // We toggle isSensor. 
+                // isSensor = true -> Ghost (Pass through)
+                // isSensor = false -> Solid
+                
+                if (isSolid) {
+                    if (body.isSensor) {
+                        body.isSensor = false;
+                        // body.render.visible = true; // Debug visual
+                    }
+                } else {
+                    if (!body.isSensor) {
+                        body.isSensor = true;
+                        // body.render.visible = false;
+                    }
+                }
+            }
+        }
+
+        function draw() {
+            // Clear Screen
+            ctx.clearRect(0, 0, width, height);
+
+            // Draw Webcam Background (Dimmed)
+            ctx.save();
+            ctx.globalAlpha = 0.2;
+            ctx.translate(width, 0);
+            ctx.scale(-1, 1);
+            
+            // Calculate Aspect Ratio to fill screen (cover)
+            const videoRatio = video.videoWidth / video.videoHeight;
+            const screenRatio = width / height;
+            let drawW, drawH, startX, startY;
+
+            if (screenRatio > videoRatio) {
+                drawW = width;
+                drawH = width / videoRatio;
+                startX = 0;
+                startY = (height - drawH) / 2;
+            } else {
+                drawH = height;
+                drawW = height * videoRatio;
+                startX = (width - drawW) / 2;
+                startY = 0;
+            }
+            ctx.drawImage(video, startX, startY, drawW, drawH);
+            ctx.restore();
+
+            // Draw "Solid" Grid Areas (The User's digital shadow)
+            ctx.fillStyle = CONFIG.invert ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 255, 204, 0.1)';
+            ctx.beginPath();
+            for (let i = 0; i < gridBodies.length; i++) {
+                if (!gridBodies[i].isSensor) {
+                    const pos = gridBodies[i].position;
+                    // Draw a slightly larger rect to fill gaps
+                    ctx.rect(pos.x - CONFIG.gridSize/2, pos.y - CONFIG.gridSize/2, CONFIG.gridSize + 1, CONFIG.gridSize + 1);
+                }
+            }
+            ctx.fill();
+
+            // Draw Physics Particles
+            const allBodies = Composite.allBodies(engine.world);
+            
+            for (let body of allBodies) {
+                if (body.label === 'grid') continue; // We already drew grid manually
+                
+                ctx.beginPath();
+                const vertices = body.vertices;
+                ctx.moveTo(vertices[0].x, vertices[0].y);
+                for (let j = 1; j < vertices.length; j += 1) {
+                    ctx.lineTo(vertices[j].x, vertices[j].y);
+                }
+                ctx.lineTo(vertices[0].x, vertices[0].y);
+                
+                ctx.fillStyle = body.render.fillStyle;
+                ctx.fill();
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = '#fff';
+                ctx.stroke();
+            }
+        }
+
+        function updateStatus(msg) {
+            document.getElementById('status-msg').innerText = msg;
+        }
+
+        // --- UI Events ---
+
+        document.getElementById('threshold').addEventListener('input', (e) => {
+            CONFIG.threshold = parseInt(e.target.value);
+            document.getElementById('thresh-val').innerText = CONFIG.threshold;
+        });
+
+        document.getElementById('resolution').addEventListener('change', (e) => {
+            CONFIG.gridSize = parseInt(e.target.value);
+            document.getElementById('res-val').innerText = CONFIG.gridSize;
+            createGrid(); // Recreate grid with new size
+        });
+
+        document.getElementById('invert-btn').addEventListener('click', (e) => {
+            CONFIG.invert = !CONFIG.invert;
+            e.target.innerText = CONFIG.invert 
+                ? "Mode: Bright Objects (Flashlight)" 
+                : "Mode: Dark Objects (Shadows)";
+            // Flip threshold default for usability
+            if(CONFIG.invert) {
+                CONFIG.threshold = 200;
+                document.getElementById('threshold').value = 200;
+            } else {
+                CONFIG.threshold = 100;
+                document.getElementById('threshold').value = 100;
+            }
+            document.getElementById('thresh-val').innerText = CONFIG.threshold;
+        });
+
+        document.getElementById('clear-btn').addEventListener('click', () => {
+            Composite.remove(engine.world, particles);
+            particles = [];
+        });
+
+        document.getElementById('reset-sim-btn').addEventListener('click', () => {
+             // Hard reset of particles
+             Composite.remove(engine.world, particles);
+             particles = [];
+             createGrid();
+        });
+
+        // Window Resize Handling
+        window.addEventListener('resize', () => {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+            // Update walls
+            Composite.clear(engine.world, false); // Keep particles, clear static
+            initPhysics(); // Re-init
+            particles = []; // Clear particles to be safe
+        });
+
+    </script>
+</body>
+</html>
