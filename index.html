@@ -141,7 +141,7 @@
         <h2>Physics Webcam Mirror</h2>
         <p style="max-width: 500px; color: #ccc; margin-bottom: 30px;">
             This simulation requires camera access. Your movement will control the physics bodies. <br>
-            Move your hands to bounce the falling shapes!
+            Wave your hands to swirl the particle field!
         </p>
         <button id="start-btn">Start Camera</button>
     </div>
@@ -186,9 +186,9 @@
     <script>
         // --- Configuration ---
         const CONFIG = {
-            particleCount: 100,
-            particleSize: { min: 5, max: 20 },
-            spawnRate: 5, // frames between spawns
+            particleCount: 600,
+            particleSize: { min: 2, max: 6 },
+            spawnRate: 1, // frames between checks
             gridSize: 25, // Size of interaction blocks in px
             threshold: 100, // 0-255 brightness threshold
             invert: false // If true, bright areas are solid. If false, dark areas are solid.
@@ -253,21 +253,26 @@
 
             // Setup Engine
             engine = Engine.create();
-            engine.gravity.y = 1;
+            engine.gravity.y = 0; // Zero gravity for particle field
+            engine.gravity.scale = 0;
 
-            // Setup Boundaries (Left, Right, Bottom) - Top is open
+            // Setup Boundaries (Left, Right, Bottom, Top)
             const wallOptions = { isStatic: true, render: { fillStyle: '#333' } };
             const ground = Bodies.rectangle(width / 2, height + 50, width, 100, wallOptions);
+            const ceiling = Bodies.rectangle(width / 2, -50, width, 100, wallOptions);
             const leftWall = Bodies.rectangle(-50, height / 2, 100, height, wallOptions);
             const rightWall = Bodies.rectangle(width + 50, height / 2, 100, height, wallOptions);
             
-            Composite.add(engine.world, [ground, leftWall, rightWall]);
+            Composite.add(engine.world, [ground, ceiling, leftWall, rightWall]);
 
             // Create the Interaction Grid
             createGrid();
+            
+            // Initial particle fill
+            fillScreenWithParticles();
 
             // Hook into Matter.js update loop
-            Events.on(engine, 'afterUpdate', spawnParticles);
+            Events.on(engine, 'afterUpdate', maintainParticles);
         }
 
         function createGrid() {
@@ -305,41 +310,47 @@
             Composite.add(engine.world, gridBodies);
             updateStatus(`Grid Created: ${cols}x${rows} (${gridBodies.length} bodies)`);
         }
-
-        function spawnParticles() {
-            frameCount++;
-            if (frameCount % CONFIG.spawnRate === 0 && particles.length < CONFIG.particleCount) {
-                const size = Common.random(CONFIG.particleSize.min, CONFIG.particleSize.max);
-                const x = Common.random(50, width - 50);
-                
-                // Random neon colors
-                const colors = ['#ff0055', '#00ffcc', '#ffff00', '#cc00ff'];
-                const color = Common.choose(colors);
-
-                let body;
-                if (Math.random() > 0.5) {
-                    body = Bodies.circle(x, -50, size, {
-                        restitution: 0.9,
-                        friction: 0.001,
-                        render: { fillStyle: color }
-                    });
-                } else {
-                    body = Bodies.rectangle(x, -50, size*1.5, size*1.5, {
-                        restitution: 0.7,
-                        render: { fillStyle: color }
-                    });
-                }
-
-                particles.push(body);
-                Composite.add(engine.world, body);
+        
+        function fillScreenWithParticles() {
+            for(let i=0; i<CONFIG.particleCount; i++) {
+                createParticle();
             }
+        }
+        
+        function createParticle() {
+            const size = Common.random(CONFIG.particleSize.min, CONFIG.particleSize.max);
+            const x = Common.random(50, width - 50);
+            const y = Common.random(50, height - 50);
+            
+            // Random neon colors
+            const colors = ['#ff0055', '#00ffcc', '#ffff00', '#cc00ff', '#ffffff'];
+            const color = Common.choose(colors);
 
-            // Cleanup falling particles
+            let body = Bodies.circle(x, y, size, {
+                restitution: 0.9,
+                friction: 0,
+                frictionAir: 0.02, // Adds "drag" so they float like dust/fluid
+                render: { fillStyle: color }
+            });
+
+            particles.push(body);
+            Composite.add(engine.world, body);
+        }
+
+        function maintainParticles() {
+            // Respawn particles if they glitch out of bounds or we need more
             for (let i = particles.length - 1; i >= 0; i--) {
-                if (particles[i].position.y > height + 100) {
-                    Composite.remove(engine.world, particles[i]);
+                const p = particles[i];
+                if (p.position.y > height + 100 || p.position.y < -100 || 
+                    p.position.x > width + 100 || p.position.x < -100) {
+                    Composite.remove(engine.world, p);
                     particles.splice(i, 1);
                 }
+            }
+            
+            // Add new if deficit
+            if (particles.length < CONFIG.particleCount) {
+                 createParticle();
             }
         }
 
@@ -403,19 +414,13 @@
                 }
 
                 // Update Body State
-                // We toggle isSensor. 
-                // isSensor = true -> Ghost (Pass through)
-                // isSensor = false -> Solid
-                
                 if (isSolid) {
                     if (body.isSensor) {
                         body.isSensor = false;
-                        // body.render.visible = true; // Debug visual
                     }
                 } else {
                     if (!body.isSensor) {
                         body.isSensor = true;
-                        // body.render.visible = false;
                     }
                 }
             }
@@ -427,7 +432,7 @@
 
             // Draw Webcam Background (Dimmed)
             ctx.save();
-            ctx.globalAlpha = 0.2;
+            ctx.globalAlpha = 0.15; // Slightly dimmer
             ctx.translate(width, 0);
             ctx.scale(-1, 1);
             
@@ -451,7 +456,7 @@
             ctx.restore();
 
             // Draw "Solid" Grid Areas (The User's digital shadow)
-            ctx.fillStyle = CONFIG.invert ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 255, 204, 0.1)';
+            ctx.fillStyle = CONFIG.invert ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 255, 204, 0.05)';
             ctx.beginPath();
             for (let i = 0; i < gridBodies.length; i++) {
                 if (!gridBodies[i].isSensor) {
@@ -466,21 +471,13 @@
             const allBodies = Composite.allBodies(engine.world);
             
             for (let body of allBodies) {
-                if (body.label === 'grid') continue; // We already drew grid manually
+                if (body.label === 'grid') continue; 
                 
+                // Simple Circle Draw for speed
                 ctx.beginPath();
-                const vertices = body.vertices;
-                ctx.moveTo(vertices[0].x, vertices[0].y);
-                for (let j = 1; j < vertices.length; j += 1) {
-                    ctx.lineTo(vertices[j].x, vertices[j].y);
-                }
-                ctx.lineTo(vertices[0].x, vertices[0].y);
-                
+                ctx.arc(body.position.x, body.position.y, body.circleRadius, 0, 2 * Math.PI);
                 ctx.fillStyle = body.render.fillStyle;
                 ctx.fill();
-                ctx.lineWidth = 1;
-                ctx.strokeStyle = '#fff';
-                ctx.stroke();
             }
         }
 
@@ -520,6 +517,8 @@
         document.getElementById('clear-btn').addEventListener('click', () => {
             Composite.remove(engine.world, particles);
             particles = [];
+            // Re-fill immediately in this mode
+            fillScreenWithParticles();
         });
 
         document.getElementById('reset-sim-btn').addEventListener('click', () => {
@@ -527,6 +526,7 @@
              Composite.remove(engine.world, particles);
              particles = [];
              createGrid();
+             fillScreenWithParticles();
         });
 
         // Window Resize Handling
@@ -536,9 +536,8 @@
             canvas.width = width;
             canvas.height = height;
             // Update walls
-            Composite.clear(engine.world, false); // Keep particles, clear static
-            initPhysics(); // Re-init
-            particles = []; // Clear particles to be safe
+            Composite.clear(engine.world, false); 
+            initPhysics(); 
         });
 
     </script>
